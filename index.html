@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>P2P_CHAT.EXE — Decentralised</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%231A1410'/><rect x='2' y='2' width='12' height='4' fill='%238B6914'/><rect x='2' y='8' width='12' height='2' fill='%23D4C4A0'/><rect x='2' y='12' width='8' height='2' fill='%234A3820'/></svg>">
+  <link rel="stylesheet" href="css/output.css">
+</head>
+<body class="bg-base text-txt font-widget overflow-hidden">
+
+  <!-- E-11: WebRTC unsupported — full-screen error (SRS §9) -->
+  <div id="webrtc-error" class="hidden fixed inset-0 z-[200] bg-base items-center justify-center p-6">
+    <div class="max-w-xl">
+      <div class="titlebar"><span class="px-1">FATAL.EXE</span></div>
+      <div class="bevel-out bg-panel p-4 text-center">
+        <p class="text-center text-dim text-[12px] leading-relaxed uppercase tracking-tight">
+          THIS BROWSER DOES NOT SUPPORT WEBRTC.<br>USE CHROME, FIREFOX, OR EDGE.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Desktop backdrop — the app window floats on it and is draggable (§2.3) -->
+  <div id="desktop" class="fixed inset-0 desktop-dots"></div>
+
+  <!-- ============================ APP WINDOW ============================ -->
+  <div id="app-window"
+       class="fixed z-10 flex flex-col bevel-out bg-panel shadow-widget"
+       style="left:50%;top:50%;transform:translate(-50%,-50%);width:min(980px,100vw);height:min(700px,100vh)">
+
+    <!-- Title bar: app name, gradient, close/minimise bevelled boxes (§2.3) -->
+    <div id="app-titlebar" class="titlebar">
+      <span class="px-1 select-none">P2P_CHAT.EXE — DECENTRALISED MESSAGING CONSOLE</span>
+      <span class="titlebar-buttons">
+        <button id="btn-minimize" class="tb-btn" title="MINIMISE" aria-label="Minimise window">_</button>
+        <button id="btn-window-close" class="tb-btn" title="CLOSE" aria-label="Close window">×</button>
+      </span>
+    </div>
+
+    <!-- Navigation strip: CHAT / CONTACTS / SETTINGS (§10.1) -->
+    <nav id="nav-strip" class="flex flex-none gap-1 p-1 bg-sunken bevel-in" aria-label="Main navigation">
+      <button class="widget-btn nav-btn" data-view="chat" aria-current="true">CHAT</button>
+      <button class="widget-btn nav-btn" data-view="contacts">CONTACTS</button>
+      <button class="widget-btn nav-btn" data-view="settings">SETTINGS</button>
+      <span id="nav-status-spacer" class="flex-1"></span>
+      <span id="nav-key-chip" class="hidden sm:inline-flex items-center px-2 text-[10px] text-dim uppercase tracking-tight truncate max-w-[220px]" title=""></span>
+    </nav>
+
+    <!-- Main content area: swaps content based on active view (§10.1) -->
+    <main id="main-content" class="flex-1 min-h-0 relative bg-base bevel-in m-1 mt-0 overflow-hidden">
+
+      <!-- ========================= CHAT VIEW (§10.2) ==================== -->
+      <section id="view-chat" class="chat-view absolute inset-0 flex flex-col" aria-label="Chat view">
+
+        <!-- Peer selector / active peer display -->
+        <div id="chat-peer-header" class="flex flex-none items-center gap-2 p-1 bg-panel bevel-in">
+          <label for="peer-select" class="text-[11px] uppercase tracking-tight text-dim px-1">PEER:</label>
+          <select id="peer-select" class="widget-input flex-1 min-w-0" aria-label="Select peer"></select>
+          <button id="btn-connect" class="widget-btn widget-btn--primary flex-none" title="Knock on this peer's public key channel">CONNECT</button>
+        </div>
+
+        <!-- Message history: scrollable, newest at bottom, CRT scanlines -->
+        <div id="chat-scroll-wrap" class="flex-1 min-h-0 flex crt-scanlines">
+          <div id="chat-messages" class="flex-1 overflow-y-auto px-1 py-2" aria-live="polite" aria-label="Message history"></div>
+          <div id="chat-scrollbar" class="scrollbar-widget"></div>
+        </div>
+
+        <!-- Message input + send (disabled when no DataChannel — FR-26) -->
+        <form id="chat-input-row" class="flex flex-none items-stretch gap-1 p-1 bg-panel bevel-in" autocomplete="off">
+          <input id="message-input" class="widget-input flex-1" type="text" maxlength="4096"
+                 placeholder="TYPE MESSAGE..." aria-label="Message input" disabled>
+          <button id="btn-send" class="widget-btn flex-none px-4" type="submit" disabled>SEND</button>
+        </form>
+      </section>
+
+      <!-- ======================= CONTACTS VIEW (§10.3) =================== -->
+      <section id="view-contacts" class="hidden absolute inset-0 flex flex-col" aria-label="Contacts view">
+        <div class="flex-1 min-h-0 flex flex-col bg-base">
+          <div class="flex flex-none items-center gap-2 p-1 bg-panel bevel-in">
+            <span class="text-[11px] uppercase tracking-tight text-dim px-1">CONTACTS.LST</span>
+            <span id="contacts-count" class="text-[11px] text-dim"></span>
+            <span class="flex-1"></span>
+            <button id="btn-add-contact" class="widget-btn">ADD CONTACT</button>
+          </div>
+
+          <!-- inline add-contact form (UC-03) -->
+          <form id="add-contact-form" class="hidden flex-none m-1 p-2 bg-panel bevel-out flex-col gap-2" autocomplete="off">
+            <div class="text-[11px] uppercase tracking-tight text-dim">NEW CONTACT — PASTE PUBLIC KEY (JWK)</div>
+            <textarea id="add-contact-key" class="widget-input font-[inherit] text-[12px] h-24 resize-none" spellcheck="false"
+                      placeholder='{"kty":"EC","crv":"P-256","x":"...","y":"..."}' aria-label="Peer public key"></textarea>
+            <div class="flex items-center gap-2">
+              <input id="add-contact-nickname" class="widget-input flex-1" maxlength="32" placeholder="NICKNAME (OPTIONAL, LOCAL ONLY)" aria-label="Nickname">
+              <button type="submit" id="btn-add-confirm" class="widget-btn widget-btn--primary">CONFIRM</button>
+              <button type="button" id="btn-add-cancel" class="widget-btn">CANCEL</button>
+            </div>
+            <div id="add-contact-error" class="hidden text-[11px] uppercase text-err"></div>
+          </form>
+
+          <!-- peer list -->
+          <div class="flex-1 min-h-0 flex">
+            <div id="contacts-list" class="flex-1 overflow-y-auto" aria-label="Known peers list"></div>
+            <div id="contacts-scrollbar" class="scrollbar-widget"></div>
+          </div>
+          <div id="contacts-empty" class="hidden p-4 text-[12px] text-dim uppercase text-center leading-relaxed">
+            NO KNOWN PEERS.<br>ADD A CONTACT WITH THEIR PUBLIC KEY.
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================= SETTINGS VIEW (§10.4) ================== -->
+      <section id="view-settings" class="hidden absolute inset-0 overflow-y-auto" aria-label="Settings view">
+        <div class="flex flex-col gap-2 p-2 max-w-3xl mx-auto">
+
+          <!-- IDENTITY -->
+          <div class="bg-panel bevel-out">
+            <div class="titlebar"><span class="px-1">IDENTITY.DAT</span></div>
+            <div class="p-2 flex flex-col gap-2">
+              <div class="text-[11px] uppercase tracking-tight text-dim">YOUR PUBLIC KEY — THIS IS YOUR ADDRESS. SHARE IT.</div>
+              <div class="bevel-in bg-sunken p-2 h-28 overflow-y-auto text-[11px] leading-relaxed break-all select-text" id="settings-public-key">…</div>
+              <div class="flex gap-1 flex-wrap">
+                <button id="btn-copy-key" class="widget-btn">COPY KEY</button>
+                <button id="btn-export-data" class="widget-btn">EXPORT DATA</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- APPEARANCE -->
+          <div class="bg-panel bevel-out">
+            <div class="titlebar"><span class="px-1">APPEARANCE.CFG</span></div>
+            <div class="p-2 flex flex-col gap-1">
+              <div class="text-[11px] uppercase tracking-tight text-dim mb-1">THEME</div>
+              <div id="theme-selector" class="flex flex-col">
+                <label class="theme-option"><span class="widget-check" data-check></span> VOID BROWN <span class="text-dim text-[10px]">(DEFAULT)</span></label>
+                <label class="theme-option"><span class="widget-check" data-check></span> SLIME GREEN</label>
+                <label class="theme-option"><span class="widget-check" data-check></span> CRT PHOSPHOR</label>
+                <label class="theme-option"><span class="widget-check" data-check></span> DUST <span class="text-dim text-[10px]">(LIGHT)</span></label>
+                <label class="theme-option"><span class="widget-check" data-check></span> CUSTOM</label>
+              </div>
+              <!-- Custom theme pickers (NFR-18) -->
+              <div id="custom-theme-controls" class="hidden flex-col gap-2 p-2 mt-1 bevel-in bg-sunken">
+                <div class="text-[11px] uppercase tracking-tight text-dim">CUSTOM THEME — REMAINING TOKENS DERIVE AUTOMATICALLY</div>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <label class="text-[11px] uppercase text-dim" for="custom-accent">ACCENT:</label>
+                  <input type="color" id="custom-accent" class="w-12 h-7 bevel-in bg-sunken cursor-pointer" value="#8B6914">
+                  <label class="text-[11px] uppercase text-dim" for="custom-bg" >BASE BG:</label>
+                  <input type="color" id="custom-bg" class="w-12 h-7 bevel-in bg-sunken cursor-pointer" value="#1A1410">
+                  <button id="btn-custom-apply" class="widget-btn">APPLY</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- NETWORK -->
+          <div class="bg-panel bevel-out">
+            <div class="titlebar"><span class="px-1">NET.STAT</span></div>
+            <div class="p-2 flex items-center gap-2 flex-wrap">
+              <span class="text-[11px] uppercase tracking-tight text-dim">SIGNALING SERVER:</span>
+              <span id="settings-net-status" class="text-[12px] uppercase">…</span>
+              <span class="flex-1"></span>
+              <button id="btn-reconnect" class="widget-btn" disabled>RECONNECT</button>
+            </div>
+          </div>
+
+          <!-- DANGER ZONE -->
+          <div class="bg-panel bevel-out" style="--error:#b0402e">
+            <div class="titlebar"><span class="px-1">DANGER.ZON</span></div>
+            <div class="p-2 flex items-center gap-2 flex-wrap">
+              <span class="text-[11px] uppercase tracking-tight text-err">DESTROYS IDENTITY, CONTACTS AND ALL MESSAGES.</span>
+              <span class="flex-1"></span>
+              <button id="btn-clear-data" class="widget-btn">CLEAR ALL DATA</button>
+            </div>
+          </div>
+
+          <div class="text-center text-[10px] text-dim uppercase tracking-tight py-2">
+            P2P_CHAT V1.0 — SRS 2.3 — NO SERVER EVER SEES A MESSAGE
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Status bar: terminal status line + blinking amber cursor (§2.3, §10.1) -->
+    <div id="status-bar" class="flex flex-none items-center gap-1 px-2 h-6 bg-sunken bevel-in cursor-pointer select-none"
+         title="STATUS — CLICK TO RETRY WHEN SIGNAL LOST" role="status">
+      <span id="status-text" class="text-[11px] uppercase tracking-tight text-accent2">INITIALISING...</span>
+      <span id="status-cursor" class="blink text-accent text-[11px] leading-none">▮</span>
+      <span class="flex-1"></span>
+      <span id="status-extra" class="text-[10px] text-dim uppercase tracking-tight hidden sm:inline"></span>
+    </div>
+  </div>
+
+  <!-- E-09: IndexedDB unavailable banner (§9) -->
+  <div id="idb-banner" class="hidden fixed top-0 inset-x-0 z-[150] bg-err text-base text-center text-[11px] uppercase tracking-tight py-1 px-2 cursor-help">
+    LOCAL STORAGE UNAVAILABLE — DATA CANNOT BE SAVED
+  </div>
+
+  <script src="js/vendor/socket.io.min.js"></script>
+  <script src="js/config.js"></script>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
