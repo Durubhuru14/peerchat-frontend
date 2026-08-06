@@ -1,19 +1,30 @@
-/* export-service.js — ExportService (SRS §12, FR-29…FR-32, UC-08)
+/* export-service.js — ExportService (SRS §12, FR-29…FR-32, UC-08 + V2 encryption)
  *
- * Reads identity, contacts, messages and preferences from IndexedDB and
- * produces a timestamped JSON file downloaded directly to the user's device
- * (FR-31). Manual export keeps data ownership with the user — there is no
- * cloud backup by design (§14).
+ * Reads identity, contacts, messages and preferences from IndexedDB,
+ * serialises them to JSON, ENCRYPTS the document with a key derived from the
+ * user's private key string (V2 requirement — see backup-crypto.js), and
+ * downloads the encrypted envelope as a timestamped JSON file (FR-31).
+ * Manual export keeps data ownership with the user — there is no cloud
+ * backup by design (SRS §14).
  *
- * NOTE: the export contains the ECDSA PRIVATE key in plaintext (the identity
- * record of §4.6, "browser storage is the boundary"). Losing this file is
- * losing the identity — treat it accordingly.
+ * V1→V2 change: the downloaded file no longer contains the private key (or
+ * anything else) in plaintext. Restoring the file requires the private key
+ * string from the device that created it — that key is available via the
+ * COPY PRIVATE KEY button in Settings, and is the ONLY passphrase that can
+ * decrypt the envelope.
+ *
+ * The inner document (before encryption) is unchanged from V1:
+ *   { app, version, srs, exported_at, identity, known_peers, messages,
+ *     preferences }
+ * so an imported backup restores exactly what V1 exported.
  */
 
 import { tx, reqAsPromise } from "./db.js";
 import { nowISO } from "./utils.js";
+import { encryptBackupDocument } from "./backup-crypto.js";
 
-export async function exportAllData() {
+/** Read every store and build the INNER (pre-encryption) document. */
+export async function collectBackupDocument() {
   const [identity, peerRecords, peerKeys, messages, preferences] =
     await Promise.all([
       tx("identity", "readonly", (s) => reqAsPromise(s.get("identity"))),
@@ -31,9 +42,9 @@ export async function exportAllData() {
     last_seen: r.last_seen,
   }));
 
-  const doc = {
+  return {
     app: "p2p-decentralised-chat",
-    version: 1,
+    version: 2,
     srs: "2.3",
     exported_at: nowISO(),
     identity: identity
@@ -43,12 +54,29 @@ export async function exportAllData() {
     messages,
     preferences: preferences || null,
   };
+}
+
+/**
+ * UC-08 (V2) — export everything as an ENCRYPTED, timestamped JSON file.
+ * The passphrase is the caller's private key string (main.js supplies it
+ * from the live identity — the user never types it for export).
+ *
+ * @param {string} privateKeyString  JSON.stringify(privateKeyJWK) — passphrase
+ * @returns {Promise<string>} the downloaded filename
+ */
+export async function exportAllData(privateKeyString) {
+  if (typeof privateKeyString !== "string" || privateKeyString.length === 0) {
+    throw new Error("private key string required to encrypt the backup");
+  }
+
+  const doc = await collectBackupDocument();
+  const envelope = await encryptBackupDocument(doc, privateKeyString);
 
   /* FR-32 — filename includes a timestamp (filesystem-safe form). */
   const stamp = nowISO().replace(/[:.]/g, "-");
-  const filename = `p2p-chat-export-${stamp}.json`;
+  const filename = `p2p-chat-backup-${stamp}.json`;
 
-  const blob = new Blob([JSON.stringify(doc, null, 2)], {
+  const blob = new Blob([JSON.stringify(envelope, null, 2)], {
     type: "application/json",
   });
   const url = URL.createObjectURL(blob);
