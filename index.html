@@ -123,6 +123,22 @@
                 <button id="btn-copy-key" class="widget-btn">COPY KEY</button>
                 <button id="btn-export-data" class="widget-btn">EXPORT DATA</button>
               </div>
+
+              <!-- V2: private key copy — the backup decryption passphrase -->
+              <div class="bevel-in bg-sunken p-2 flex flex-col gap-2">
+                <div class="text-[11px] uppercase tracking-tight text-err leading-relaxed">WARNING — SENSITIVE. THE PRIVATE KEY IS REQUIRED TO DECRYPT ANY EXPORTED BACKUP. ANYONE WHO HAS IT CAN IMPERSONATE YOUR IDENTITY. NEVER SHARE IT.</div>
+                <button id="btn-copy-privkey" class="widget-btn self-start">COPY PRIVATE KEY</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- V2: BACKUP RESTORE -->
+          <div class="bg-panel bevel-out">
+            <div class="titlebar"><span class="px-1">RESTORE.DAT</span></div>
+            <div class="p-2 flex flex-col gap-2">
+              <div class="text-[11px] uppercase tracking-tight text-dim leading-relaxed">IMPORT A BACKUP EXPORTED FROM ANOTHER DEVICE TO RESTORE YOUR IDENTITY, CONTACTS AND MESSAGE HISTORY.</div>
+              <div class="text-[10px] text-dim uppercase tracking-tight leading-relaxed">ENCRYPTED BACKUPS ARE DECRYPTED WITH THE PRIVATE KEY OF THE DEVICE THAT CREATED THEM.</div>
+              <button id="btn-import-backup" class="widget-btn self-start">IMPORT BACKUP…</button>
             </div>
           </div>
 
@@ -166,15 +182,25 @@
           <!-- DANGER ZONE -->
           <div class="bg-panel bevel-out" style="--error:#b0402e">
             <div class="titlebar"><span class="px-1">DANGER.ZON</span></div>
-            <div class="p-2 flex items-center gap-2 flex-wrap">
-              <span class="text-[11px] uppercase tracking-tight text-err">DESTROYS IDENTITY, CONTACTS AND ALL MESSAGES.</span>
-              <span class="flex-1"></span>
-              <button id="btn-clear-data" class="widget-btn">CLEAR ALL DATA</button>
+            <div class="p-2 flex flex-col gap-2">
+              <!-- V2: regenerate identity -->
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-[11px] uppercase tracking-tight text-err">REGENERATE KEYS — NEW IDENTITY, CONTACTS WIPED, OLD ADDRESS LOST FOREVER. IRREVERSIBLE.</span>
+                <span class="flex-1"></span>
+                <button id="btn-regenerate-keys" class="widget-btn">REGENERATE KEYS</button>
+              </div>
+              <div class="bevel-in bg-sunken p-1"></div>
+              <!-- V1: clear all data -->
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-[11px] uppercase tracking-tight text-err">DESTROYS IDENTITY, CONTACTS AND ALL MESSAGES.</span>
+                <span class="flex-1"></span>
+                <button id="btn-clear-data" class="widget-btn">CLEAR ALL DATA</button>
+              </div>
             </div>
           </div>
 
           <div class="text-center text-[10px] text-dim uppercase tracking-tight py-2">
-            P2P_CHAT V1.0 — SRS 2.3 — NO SERVER EVER SEES A MESSAGE
+            P2P_CHAT V2.0 — SRS 2.3 + ENCRYPTED BACKUPS — NO SERVER EVER SEES A MESSAGE
           </div>
         </div>
       </section>
