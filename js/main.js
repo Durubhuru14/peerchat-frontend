@@ -14,7 +14,7 @@
 
 import { jwkToString, stringToJwk, isValidPublicJwk, getPublicKeyFingerprint, copyText } from "./utils.js";
 import { isDegraded } from "./db.js";
-import { initIdentity, getMyPublicKeyJwk } from "./identity.js";
+import { initIdentity, getMyPublicKeyJwk, getMyPrivateKeyString, regenerateIdentity } from "./identity.js";
 import SignalingClient from "./signaling-client.js";
 import PeerConnection from "./peer-connection.js";
 import * as knownPeers from "./known-peers.js";
@@ -343,8 +343,34 @@ function switchView(name) {
   });
   settingsView.initSettingsView({
     getMyPublicKeyString: () => jwkToString(getMyPublicKeyJwk()),
-    onExportData: exportAllData, // UC-08 / FR-29…32
+    /* V2 — the private key string is the backup encryption passphrase
+     * (COPY PRIVATE KEY button in Settings). */
+    getMyPrivateKeyString: () => getMyPrivateKeyString(),
+    /* V2 — export is now an ENCRYPTED backup envelope (backup-crypto.js). */
+    onExportData: () => exportAllData(getMyPrivateKeyString()), // UC-08 / FR-29…32 + V2
     onReconnect: () => signaling.manualReconnect(),
+    /* V2 — Import Identity: settings-view ran restoreBackup() into
+     * IndexedDB; reload re-boots the app on the restored identity. */
+    onBackupRestored: () => {
+      window.location.reload();
+    },
+    /* V2 — Regenerate Identity: fresh keypair + cleared known_peers, then
+     * reload onto the new identity (old room is abandoned by the reload).
+     * Failures (e.g. degraded IndexedDB) surface instead of wiping. */
+    onRegenerateKeys: async () => {
+      try {
+        await regenerateIdentity();
+      } catch (err) {
+        console.error("[identity] regenerate failed", err);
+        showModal({
+          title: "REGENERATE FAILED",
+          bodyText: "THE KEYPAIR COULD NOT BE REGENERATED. NOTHING WAS CHANGED.",
+          buttons: [{ label: "OK", primary: true }],
+        });
+        return;
+      }
+      window.location.reload();
+    },
     onClearAllData: async () => {
       /* §10.4 Danger Zone — deletes all stores, reloads, fresh identity. */
       const { deleteDatabase } = await import("./db.js");
@@ -418,6 +444,6 @@ function switchView(name) {
     await loadThread(sorted[0]._key);
   }
 
-  statusExtra.textContent = window.APP_CONFIG?.statusSuffix || "V1.0 — SRS 2.3";
+  statusExtra.textContent = window.APP_CONFIG?.statusSuffix || "V2.0 — SRS 2.3 + ENCRYPTED BACKUPS";
   updateStatus();
 })();
