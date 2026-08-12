@@ -53,7 +53,17 @@ function updateStatus() {
       case "online": text = "ONLINE"; break;
       case "connecting": text = "CONNECTING..."; break;
       case "reconnecting": text = "RECONNECTING..."; break; // FR-33 / E-02
-      case "lost": text = "SIGNAL LOST"; break;             // E-01 / E-03
+      case "lost": {
+        /* E-01 / E-03 — carry the probed cause (signaling-client diagnosis):
+         * e.g. "SIGNAL LOST — 404 — NO SOCKET.IO HERE" when the page is
+         * served by a static file server without the signaling server. */
+        const d = signaling?.getDiagnosis?.();
+        text = d ? `SIGNAL LOST — ${d.short}` : "SIGNAL LOST";
+        statusText.title = d
+          ? d.long
+          : "Signaling server unreachable. Tap here to retry.";
+        break;
+      }
       default: text = "INITIALISING...";
     }
   }

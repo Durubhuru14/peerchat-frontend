@@ -41,6 +41,8 @@ export default class SignalingClient {
     this._reconnectTimer = null;
     this._state = "idle"; // idle | connecting | online | reconnecting | lost
     this._statusCb = null;
+    this._diagnosis = null;       // { short, long } — why we cannot connect
+    this._diagnosisProbed = false; // one probe per connection cycle
   }
 
   /* ------------------------------------------------------------------ status */
@@ -80,6 +82,8 @@ export default class SignalingClient {
     this._myPublicKey = myPublicKeyString;
     this._clearReconnectTimer();
     this._reconnectAttempts = 0;
+    this._diagnosis = null; // fresh cycle — allow a fresh probe
+    this._diagnosisProbed = false;
     this._openSocket();
   }
 
@@ -105,6 +109,7 @@ export default class SignalingClient {
   _wireSocket(socket) {
     socket.on("connect", () => {
       this._reconnectAttempts = 0;
+      this._diagnosis = null; // connected — no fault to report
       /* FR-05 — (re)subscribe to my own public key channel. */
       socket.emit("join-room", { publicKey: this._myPublicKey });
       this._setState("online");
@@ -122,6 +127,7 @@ export default class SignalingClient {
 
     socket.on("connect_error", () => {
       if (this._sessionActive) return;
+      this._diagnose(); // fire-and-forget: why is the endpoint failing?
       this._scheduleReconnect(this._reconnectAttempts);
     });
 
@@ -150,6 +156,109 @@ export default class SignalingClient {
     socket.on("peer-disconnected", (data) =>
       this._handlers.onPeerDisconnected?.(data.publicKey)
     );
+  }
+
+  /* ------------------------------------------------- connection diagnosis */
+
+  /** Build the probe URL exactly the way the engine.io client builds its
+   *  transport requests, so the probe tests the SAME route (origin + path
+   *  + carried query, e.g. a gateway's XTransformPort). */
+  _probeUrl() {
+    let origin = ""; // "" = same origin
+    let extraQuery = "";
+    if (this._path) {
+      if (/^https?:\/\//i.test(this._path)) {
+        try {
+          const u = new URL(this._path);
+          origin = u.origin;
+          extraQuery = u.searchParams.toString();
+        } catch {
+          /* keep same-origin fallback */
+        }
+      } else {
+        const qi = this._path.indexOf("?");
+        if (qi !== -1) extraQuery = this._path.slice(qi + 1);
+      }
+    }
+    let url = `${origin}/socket.io/?EIO=4&transport=polling`;
+    if (extraQuery) url += `&${extraQuery}`;
+    return url;
+  }
+
+  /** One lightweight GET per connection cycle; maps the outcome to a
+   *  human-readable cause. Purely diagnostic — never blocks the ladder. */
+  async _diagnose() {
+    if (this._diagnosisProbed) return;
+    this._diagnosisProbed = true;
+
+    let status = null;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(this._probeUrl(), {
+        method: "GET",
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      status = res.status;
+    } catch {
+      status = null;
+    }
+
+    if (status === null) {
+      this._diagnosis = {
+        short: "ORIGIN UNREACHABLE",
+        long:
+          "The signaling probe reached no HTTP server. If this page was opened " +
+          "directly from disk (file://) or the server is down, serve the app " +
+          "over HTTP instead: run `npm install && npm start` and open " +
+          "http://localhost:3000.",
+      };
+    } else if (status === 404) {
+      this._diagnosis = {
+        short: "404 — NO SOCKET.IO HERE",
+        long:
+          "The server that served this page has no /socket.io/ endpoint. This " +
+          "happens when public/ is opened through a static file server " +
+          "(Live Server, serve, http-server, a CDN). Fix: start the bundled " +
+          "Express + Socket.io server (npm install && npm start) and open " +
+          "http://localhost:3000 — or keep the static host AND run the " +
+          "signaling server separately (PORT=3003 node server/index.js), then " +
+          "point js/config.js signalingPath at it, e.g. " +
+          "\"http://localhost:3003\".",
+      };
+    } else if (status >= 200 && status < 300) {
+      this._diagnosis = {
+        short: `HANDSHAKE FAILS (HTTP ${status})`,
+        long:
+          "The /socket.io/ endpoint answered but the handshake did not " +
+          "complete. Check for a Socket.io client/server version mismatch " +
+          "(this bundle ships a matched v4 / EIO=4 pair) or an intermediary " +
+          "that strips the query string.",
+      };
+    } else {
+      this._diagnosis = {
+        short: `ENDPOINT HTTP ${status}`,
+        long:
+          `The /socket.io/ endpoint replied HTTP ${status}. Check reverse ` +
+          "proxies / gateway routing for this origin.",
+      };
+    }
+
+    console.warn(
+      `[signal] ${this._diagnosis.short}\n[signal] ${this._diagnosis.long}`
+    );
+    this._notify();
+  }
+
+  /** Re-render without a state change (diagnosis arrived late). */
+  _notify() {
+    if (this._statusCb) this._statusCb(this._state);
+  }
+
+  /** { short, long } | null — cause of the current connection failure. */
+  getDiagnosis() {
+    return this._diagnosis;
   }
 
   /* ------------------------------------------------- reconnection ladder */
@@ -186,6 +295,8 @@ export default class SignalingClient {
   manualReconnect() {
     if (this.isConnected()) return;
     this._reconnectAttempts = 0;
+    this._diagnosis = null; // fresh cycle — allow a fresh probe
+    this._diagnosisProbed = false;
     this._clearReconnectTimer();
     this._openSocket();
   }
