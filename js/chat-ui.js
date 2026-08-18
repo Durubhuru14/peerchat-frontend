@@ -17,6 +17,7 @@ import { attachScrollbar } from "./components.js";
 
 let displayedThreadKey = null; // key string of the thread on screen
 let lastDayKey = null;
+let lastSenderKey = null; // v2.1 grouping: sender of the previous row
 let onSendMessage = null;
 let scroller = null;
 
@@ -45,6 +46,7 @@ export function getDisplayedThread() {
 export function setDisplayedThread(peerKeyString) {
   displayedThreadKey = peerKeyString;
   lastDayKey = null;
+  lastSenderKey = null;
   scroller.replaceChildren();
 }
 
@@ -100,6 +102,7 @@ export function appendMessage(record, { history = false, mine = false, peerLabel
   const dk = dayKey(record.timestamp || new Date().toISOString());
   if (dk !== lastDayKey) {
     lastDayKey = dk;
+    lastSenderKey = null; // day break resets the grouping
     scroller.appendChild(
       el("div", {
         class: "msg-row msg-row--sys",
@@ -110,6 +113,7 @@ export function appendMessage(record, { history = false, mine = false, peerLabel
 
   if (record.decryptionFailed) {
     /* E-10 — renders inline, informational only. */
+    lastSenderKey = null;
     scroller.appendChild(
       el("div", { class: "msg-row msg-row--err" },
         el("div", { class: "msg-meta" }, el("span", { class: "msg-label", text: "PEER" })),
@@ -120,7 +124,17 @@ export function appendMessage(record, { history = false, mine = false, peerLabel
     return;
   }
 
-  const row = el("div", { class: `msg-row ${mine ? "msg-row--sent" : "msg-row--recv"}` });
+  /* v2.1 — consecutive messages from the same sender stack tight, the meta
+   * line (label + time) is shown only on the first of the group; the time
+   * stays available on hover via the row title. */
+  const senderKey = mine ? "YOU" : peerLabel;
+  const grouped = senderKey === lastSenderKey;
+  lastSenderKey = senderKey;
+
+  const row = el("div", {
+    class: `msg-row ${mine ? "msg-row--sent" : "msg-row--recv"}${grouped ? " msg-row--cont" : ""}`,
+  });
+  if (grouped) row.title = `${senderKey} — ${formatTime(record.timestamp)} (${formatFullISO(record.timestamp)})`;
   const label = el("span", { class: "msg-label" });
   label.textContent = mine ? "YOU" : peerLabel;
   const time = el("span", {
@@ -140,6 +154,7 @@ export function appendMessage(record, { history = false, mine = false, peerLabel
 
 /** System message row (§10.2: centred, ALL CAPS, dim, no border). */
 export function appendSystemMessage(text, { withTime = true } = {}) {
+  lastSenderKey = null; // system line breaks the sender grouping
   const t = withTime ? `${formatTime(new Date().toISOString())} ${text}` : text;
   scroller.appendChild(el("div", { class: "msg-row msg-row--sys", text: `── ${t} ──` }));
   scrollToBottomIfNear();
@@ -154,6 +169,12 @@ export function setInputEnabled(enabled, { placeholder } = {}) {
   input.disabled = !enabled;
   btn.disabled = !enabled;
   if (placeholder) input.placeholder = placeholder;
+}
+
+/** v2.1 — focus the composer (called when a session opens). */
+export function focusInput() {
+  const input = $("message-input");
+  if (!input.disabled) input.focus();
 }
 
 /* -------------------------------- scrolling -------------------------------- */
