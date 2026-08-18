@@ -94,6 +94,7 @@ function createSession() {
       await loadThread(sess.peerKeyString); // switch to the live thread
       chatUI.setInputEnabled(true, { placeholder: "TYPE MESSAGE..." });
       chatUI.appendSystemMessage("PEER CONNECTED");
+      chatUI.focusInput(); // v2.1 — start typing right away
       knownPeers.touchLastSeen(stringToJwk(sess.peerKeyString)).catch(() => {});
       refreshContacts().catch(() => {});
       updateStatus();
@@ -136,8 +137,11 @@ async function initiateConnection(peerRecord) {
   }
   /* Render the thread FIRST and await it — the knock and all subsequent
    * system messages (KNOCKING, PEER IS BUSY, PEER UNAVAILABLE) must land
-   * AFTER the thread render or the re-render would wipe them. */
+   * AFTER the thread render or the re-render would wipe them.
+   * v2.1 — the initiator is also taken to the chat view so the knock
+   * progress is visible immediately (no dead click on CONTACTS). */
   await loadThread(peerRecord._key);
+  switchView("chat");
   chatUI.appendSystemMessage(`KNOCKING ON ${contactsView.peerLabel(peerRecord)}...`);
   const s = createSession();
   session = s;
@@ -168,11 +172,13 @@ async function handleKnock(fromKeyString, ecdhPublicKey, timestamp) {
   }
 
   /* FR-15d — known peer (or freshly auto-added): proceed automatically.
-   * The answerer switches to the incoming peer's thread before the
-   * handshake so every system message renders into the right place. */
+   * The answerer switches to the incoming peer's thread (and, v2.1, to the
+   * chat view) before the handshake so every system message renders into
+   * the right place. */
   const s = createSession();
   session = s;
   await loadThread(fromKeyString);
+  switchView("chat");
   await s.acceptIncoming({ from: fromKeyString, ecdhPublicKey, timestamp }, record);
 }
 
@@ -208,6 +214,48 @@ async function ensureFingerprints() {
       p._fingerprint = fp;
     }
   }
+}
+
+/* ===================== v2.1 — missed-knock notice ========================= */
+
+/* E-06 enrichment (SRS v2.5 §3.3): the busy peer is told, transiently, that
+ * someone tried to reach them while they were in another session. One chat
+ * session per peer remains the V1 rule (C-01) — this only surfaces it. */
+let knockToastTimer = null;
+
+async function showMissedKnockToast(fromKeyString) {
+  let label = "UNKNOWN PEER";
+  const rec = peersCache.find((p) => p._key === fromKeyString);
+  if (rec && (rec.nickname || rec._fingerprint)) {
+    label = rec.nickname || rec._fingerprint;
+  } else {
+    const jwk = stringToJwk(fromKeyString);
+    if (jwk) {
+      try {
+        label = await getPublicKeyFingerprint(jwk);
+        fingerprintCache.set(fromKeyString, label);
+      } catch {
+        /* keep fallback label */
+      }
+    }
+  }
+
+  const busy = Boolean(session && session.isOpen);
+  const note = busy
+    ? `MISSED KNOCK — ${label} TRIED TO CONNECT (YOU ARE IN ANOTHER SESSION)`
+    : `MISSED KNOCK — ${label} TRIED TO CONNECT`;
+
+  const toast = $("knock-toast");
+  toast.textContent = `${note} — CLICK TO DISMISS`;
+  toast.classList.remove("hidden");
+  if (knockToastTimer) clearTimeout(knockToastTimer);
+  knockToastTimer = setTimeout(() => {
+    toast.classList.add("hidden");
+    knockToastTimer = null;
+  }, 8000);
+
+  /* If the knocker's thread happens to be on screen, log the line there too. */
+  systemMessageFor(fromKeyString, note);
 }
 
 /* ============================== contacts =================================== */
@@ -329,6 +377,12 @@ function switchView(name) {
     )
   );
 
+  /* v2.1 / E-06 enrichment — someone knocked while we were busy. */
+  signaling.setHandler("onKnockBlocked", (from) => {
+    if (typeof from !== "string") return;
+    showMissedKnockToast(from).catch(() => {});
+  });
+
   /* ---- views ---- */
   chatUI.initChatUI({ send: (text) => sendText(text).catch(console.error) });
   contactsView.initContactsView({
@@ -410,6 +464,13 @@ function switchView(name) {
     if (signaling && signaling.state === "lost") signaling.manualReconnect();
   });
 
+  /* ---- v2.1: missed-knock toast click-to-dismiss ---- */
+  $("knock-toast").addEventListener("click", () => {
+    if (knockToastTimer) clearTimeout(knockToastTimer);
+    knockToastTimer = null;
+    $("knock-toast").classList.add("hidden");
+  });
+
   /* ---- title bar: drag + minimise/close chrome (§2.3) ---- */
   if (window.matchMedia("(pointer: fine)").matches && window.innerWidth >= 760) {
     makeDraggable($("app-titlebar"), $("app-window"));
@@ -454,6 +515,7 @@ function switchView(name) {
     await loadThread(sorted[0]._key);
   }
 
-  statusExtra.textContent = window.APP_CONFIG?.statusSuffix || "V2.0 — SRS 2.3 + ENCRYPTED BACKUPS";
+  statusExtra.textContent =
+    window.APP_CONFIG?.statusSuffix || "V2.1 — SRS 2.5 + ENCRYPTED BACKUPS";
   updateStatus();
 })();
