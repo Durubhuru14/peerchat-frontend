@@ -142,8 +142,12 @@ export default class PeerConnection {
   }
 
   _onRoomFull() {
-    /* §8.7 / E-06 — PEER IS BUSY, no automatic retry. */
-    this.deps.onSystemMessage("PEER IS BUSY");
+    /* §8.7 / E-06 — PEER IS BUSY, no automatic retry. v2.1: the message now
+     * explains WHY and what to do; the busy peer simultaneously receives a
+     * missed-knock toast from the server (knock-blocked). */
+    this.deps.onSystemMessage(
+      "PEER IS BUSY — ALREADY IN ANOTHER SESSION (ONE CHAT PER PEER). TRY AGAIN LATER."
+    );
     this._teardown({});
   }
 

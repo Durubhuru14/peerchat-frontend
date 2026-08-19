@@ -144,6 +144,9 @@ export default class SignalingClient {
       this._handlers.onKnockRejected?.(data.from)
     );
     socket.on("room-full", (data) => this._handlers.onRoomFull?.(data.to));
+    socket.on("knock-blocked", (data) =>
+      this._handlers.onKnockBlocked?.(data.from)
+    );
     socket.on("offer", (data) =>
       this._handlers.onOffer?.(data.from, data.offer)
     );
