@@ -66,8 +66,9 @@ export default class SignalingClient {
     return Boolean(this._socket && this._socket.connected);
   }
 
-  /** FR-34 — the app marks a live DataChannel so a signaling drop never
-   *  disrupts the session (no reconnect attempts while active). */
+  /** FR-34 (mesh: any of N DataChannels) — the app marks live channels so a
+   *  signaling drop never disrupts an open session (no reconnect attempts
+   *  while at least one is active). */
   setSessionActive(active) {
     this._sessionActive = active;
     if (!active && this._socket && !this._socket.connected && this._state === "online") {
@@ -146,6 +147,11 @@ export default class SignalingClient {
     socket.on("room-full", (data) => this._handlers.onRoomFull?.(data.to));
     socket.on("knock-blocked", (data) =>
       this._handlers.onKnockBlocked?.(data.from)
+    );
+    /* v2.2 mesh — the far side ended the session cleanly (their session-end
+     * reached the server while the pair was still open). */
+    socket.on("session-closed", (data) =>
+      this._handlers.onSessionClosed?.(data.from)
     );
     socket.on("offer", (data) =>
       this._handlers.onOffer?.(data.from, data.offer)
@@ -359,5 +365,21 @@ export default class SignalingClient {
 
   sendIceCandidate(targetPublicKeyString, candidate) {
     return this._emit("ice-candidate", { to: targetPublicKeyString, candidate });
+  }
+
+  /* ---- v2.2 mesh — pair lifecycle notifications to the post office ------ */
+
+  /** Tell the server the pair's DataChannel is open (pair: pending → open).
+   *  Lets the server keep pair state (room-full guard, session-end routing)
+   *  in step with reality without ever seeing message content. */
+  sessionOpen(targetPublicKeyString) {
+    return this._emit("session-open", { to: targetPublicKeyString });
+  }
+
+  /** Tell the server this pair's session is over (clean disconnect FR-53,
+   *  teardown, or failed handshake). Best effort — the server's pending
+   *  sweep clears stale pairs when the socket path is unavailable. */
+  sessionEnd(targetPublicKeyString) {
+    return this._emit("session-end", { to: targetPublicKeyString });
   }
 }
