@@ -68,8 +68,10 @@ export function peerLabel(peerRecord) {
   return peerRecord.nickname || peerRecord._fingerprint || "PEER";
 }
 
-/** Render the full contacts list (FR-09). */
-export function renderContacts(peers, { activeSessionPeerKey }) {
+/** Render the full contacts list (FR-09). Mesh (v2.2): `connectedPeerKeys`
+ *  is the Set of peers with a live or connecting session — any number of
+ *  them can be connected at once. */
+export function renderContacts(peers, { connectedPeerKeys = new Set() } = {}) {
   const list = $("contacts-list");
   list.replaceChildren();
 
@@ -80,7 +82,7 @@ export function renderContacts(peers, { activeSessionPeerKey }) {
 
   for (const p of peers) {
     const fp = p._fingerprint || "";
-    const busy = activeSessionPeerKey === p._key;
+    const busy = connectedPeerKeys.has(p._key);
     list.appendChild(
       el("div", {
         class: `contact-row ${busy ? "contact-row--active" : ""}`,
@@ -132,19 +134,34 @@ function openPeerDetail(peer) {
     el("div", { text: `LAST SEEN: ${peer.last_seen ? formatFullISO(peer.last_seen) : "NEVER"}` }),
   ));
 
+  /* v2.2 mesh — the primary action depends on the session state: OPEN CHAT
+   * when connected (peer stays in the thread switcher), otherwise CONNECT.
+   * DISCONNECT (FR-53) ends the session without deleting the contact. */
+  const connected = Boolean(callbacks.isPeerConnected?.(peer._key));
   const modal = showModal({
     title: `PEER: ${peerLabel(peer)}`,
     bodyNode: body,
     buttons: [
-      {
-        label: "CONNECT",
-        primary: true,
-        onClick: () => { callbacks.onConnect(peer); },
-      },
+      connected
+        ? {
+            label: "OPEN CHAT",
+            primary: true,
+            onClick: () => { callbacks.onOpenChat(peer); },
+          }
+        : {
+            label: "CONNECT",
+            primary: true,
+            onClick: () => { callbacks.onConnect(peer); },
+          },
+      ...(connected ? [{
+        label: "DISCONNECT",
+        onClick: () => { callbacks.onDisconnect(peer); },
+      }] : []),
       {
         label: "REMOVE",
         onClick: async () => {
-          /* Removing deletes the peer only — message history survives (§10.3). */
+          /* Removing deletes the peer only — message history survives (§10.3).
+           * A live session with them is ended first (mesh). */
           const confirm = showModal({
             title: "REMOVE PEER",
             bodyText: `REMOVE ${peerLabel(peer)} FROM CONTACTS? THEIR MESSAGE HISTORY IS KEPT.`,
