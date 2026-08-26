@@ -1,4 +1,5 @@
-/* main.js — application bootstrap & orchestration (SRS §10.1, UC-01…UC-10)
+/* main.js — application bootstrap & orchestration (SRS v2.6 §10.1, UC-01…UC-10
+ * + v2.2 §19 mesh sessions)
  *
  * Boot order (UC-01 first launch / UC-02 subsequent launch):
  *   1. capability checks (E-11 WebRTC, E-09 IndexedDB)
@@ -7,9 +8,22 @@
  *   4. signaling connect + join own public key room (CONNECTING... → ONLINE)
  *   5. views, contacts, initial thread, first-launch banner
  *
- * App-level knock flow (FR-15, v2.3): known_peers check → auto-add if
- * unknown (fingerprint nickname) → handshake proceeds automatically.
- * One session at a time (the server enforces busy via room-full).
+ * MESH SESSIONS (v2.2, FR-51): `sessions` is a Map of live PeerConnection
+ * objects, keyed by the remote peer's key string — one simultaneous
+ * DataChannel per remote peer, any number of peers at once. Threads are
+ * switched freely while every session keeps running in the background;
+ * messages that land in a background thread raise the unread badge on the
+ * peer selector and a transient toast (FR-54).
+ *
+ * Signaling event routing (§15.2/§8.9, mesh form): ONE app-level router is
+ * registered per event for the app's lifetime; it resolves the target
+ * session by the event's `from` key at event time. Stale sessions can never
+ * intercept another session's traffic because routing consults the live
+ * sessions Map, not registration order.
+ *
+ * App-level knock flow (FR-15): known_peers check → auto-add if unknown
+ * (fingerprint nickname) → handshake proceeds automatically. A fresh knock
+ * from a peer replaces any stale session for that peer (self-healing).
  */
 
 import { jwkToString, stringToJwk, isValidPublicJwk, getPublicKeyFingerprint, copyText } from "./utils.js";
@@ -24,6 +38,7 @@ import { initTheme, setTheme } from "./theme-service.js";
 import * as chatUI from "./chat-ui.js";
 import * as contactsView from "./contacts-view.js";
 import * as settingsView from "./settings-view.js";
+import { showToast, initToast } from "./toast.js";
 import { makeDraggable, showModal } from "./components.js";
 import { $ } from "./utils.js";
 
@@ -32,8 +47,9 @@ const statusExtra = $("status-extra");
 
 let myKeyString = null;
 let signaling = null;
-let session = null; // the single active PeerConnection (V1: one session)
-let peersCache = []; // decorated known_peers records
+const sessions = new Map();     // peer key string → live PeerConnection (mesh: many)
+const unreadCounts = new Map(); // peer key string → unseen background messages
+let peersCache = [];            // decorated known_peers records
 const fingerprintCache = new Map(); // key string → fingerprint
 
 /* ============================== status bar ================================ */
@@ -43,31 +59,33 @@ function setStatusText(text) {
 }
 
 function updateStatus() {
-  let text;
-  if (session && session.isOpen) {
-    /* UC-04 step 10 — `ONLINE — [nickname or truncated key]` */
-    const rec = peersCache.find((p) => p._key === session.peerKeyString);
-    text = `ONLINE — ${rec ? contactsView.peerLabel(rec) : "PEER"}`;
+  statusText.title = "";
+  const open = [...sessions.values()].filter((s) => s.isOpen);
+  if (open.length > 0) {
+    /* UC-04 step 10 — `ONLINE — [nickname or truncated key]`; with several
+     * live sessions the bar summarises instead of listing. */
+    statusText.textContent = open.length === 1
+      ? `ONLINE — ${peerLabelFor(open[0].peerKeyString)}`
+      : `ONLINE — ${open.length} PEERS`;
   } else {
     switch (signaling?.state) {
-      case "online": text = "ONLINE"; break;
-      case "connecting": text = "CONNECTING..."; break;
-      case "reconnecting": text = "RECONNECTING..."; break; // FR-33 / E-02
+      case "online": statusText.textContent = "ONLINE"; break;
+      case "connecting": statusText.textContent = "CONNECTING..."; break;
+      case "reconnecting": statusText.textContent = "RECONNECTING..."; break; // FR-33 / E-02
       case "lost": {
         /* E-01 / E-03 — carry the probed cause (signaling-client diagnosis):
          * e.g. "SIGNAL LOST — 404 — NO SOCKET.IO HERE" when the page is
          * served by a static file server without the signaling server. */
         const d = signaling?.getDiagnosis?.();
-        text = d ? `SIGNAL LOST — ${d.short}` : "SIGNAL LOST";
+        statusText.textContent = d ? `SIGNAL LOST — ${d.short}` : "SIGNAL LOST";
         statusText.title = d
           ? d.long
           : "Signaling server unreachable. Tap here to retry.";
         break;
       }
-      default: text = "INITIALISING...";
+      default: statusText.textContent = "INITIALISING...";
     }
   }
-  setStatusText(text);
   settingsView.setNetworkStatus(signaling?.state || "idle");
 }
 
@@ -78,10 +96,20 @@ function peerLabelFor(keyString) {
   return rec ? contactsView.peerLabel(rec) : "PEER";
 }
 
-async function systemMessageFor(keyString, text) {
+function systemMessageFor(keyString, text) {
   if (chatUI.getDisplayedThread() === keyString) {
     chatUI.appendSystemMessage(text);
   }
+}
+
+/** True when the user is actively viewing a DIFFERENT peer's live thread —
+ *  used to decide whether a new session may take over the chat view. */
+function isViewingLiveOther(peerKey) {
+  if ($("view-chat").classList.contains("hidden")) return false;
+  const displayed = chatUI.getDisplayedThread();
+  if (!displayed || displayed === peerKey) return false;
+  const s = sessions.get(displayed);
+  return Boolean(s && !s._tornDown && s.isOpen);
 }
 
 function createSession() {
@@ -90,69 +118,110 @@ function createSession() {
     myKeyString,
     onSystemMessage: (text) => systemMessageFor(s.peerKeyString, text),
     onSessionOpen: async (sess) => {
-      signaling.setSessionActive(true); // FR-34
-      await loadThread(sess.peerKeyString); // switch to the live thread
-      chatUI.setInputEnabled(true, { placeholder: "TYPE MESSAGE..." });
-      chatUI.appendSystemMessage("PEER CONNECTED");
-      chatUI.focusInput(); // v2.1 — start typing right away
+      signaling.setSessionActive(sessions.size > 0); // FR-34 — any live channel
       knownPeers.touchLastSeen(stringToJwk(sess.peerKeyString)).catch(() => {});
       refreshContacts().catch(() => {});
+
+      /* Focus policy (mesh-aware v2.2): the live thread takes over the chat
+       * view unless the user is reading ANOTHER live conversation — then a
+       * toast keeps the new session one click away instead of stealing
+       * focus. v2.1's deliberate click-through (initiator path) is covered
+       * by the displayed-thread check inside the condition. */
+      const inChatView = !$("view-chat").classList.contains("hidden");
+      if (inChatView && !isViewingLiveOther(sess.peerKeyString)) {
+        await loadThread(sess.peerKeyString);
+        chatUI.appendSystemMessage("PEER CONNECTED");
+        chatUI.focusInput();
+      } else {
+        showToast(`${peerLabelFor(sess.peerKeyString)} CONNECTED`, {
+          peerKey: sess.peerKeyString,
+        });
+      }
       updateStatus();
     },
     onSessionClosed: (sess) => {
-      if (session === s) session = null;
-      signaling.setSessionActive(false);
-      chatUI.setInputEnabled(false, { placeholder: "NO OPEN DATA CHANNEL" }); // FR-28
+      if (sessions.get(sess.peerKeyString) === sess) {
+        sessions.delete(sess.peerKeyString);
+      }
+      signaling.setSessionActive(sessions.size > 0); // FR-34 — any live channel
+      if (chatUI.getDisplayedThread() === sess.peerKeyString) {
+        chatUI.setInputEnabled(false, { placeholder: "NO OPEN DATA CHANNEL" }); // FR-28
+      }
       knownPeers.touchLastSeen(stringToJwk(sess.peerKeyString)).catch(() => {});
       refreshContacts().catch(() => {});
       updateStatus();
     },
     onIncomingMessage: (record, opts) => {
-      if (chatUI.getDisplayedThread() !== record.peer) return;
-      chatUI.appendMessage(record, {
-        history: Boolean(opts.history),
-        mine: record.sender === myKeyString,
-        peerLabel: peerLabelFor(record.peer),
+      const inForeground =
+        chatUI.getDisplayedThread() === record.peer &&
+        !$("view-chat").classList.contains("hidden");
+      if (inForeground) {
+        chatUI.appendMessage(record, {
+          history: Boolean(opts.history),
+          mine: record.sender === myKeyString,
+          peerLabel: peerLabelFor(record.peer),
+        });
+        return;
+      }
+      if (opts.history) return; // background seeding merges silently (FR-23)
+
+      /* v2.2 FR-54 — live message in a background thread: unread badge +
+       * toast with a content preview; one click opens the thread. */
+      unreadCounts.set(record.peer, (unreadCounts.get(record.peer) || 0) + 1);
+      const preview = record.content.length > 48
+        ? `${record.content.slice(0, 48)}…`
+        : record.content;
+      showToast(`MSG FROM ${peerLabelFor(record.peer)}: "${preview}"`, {
+        peerKey: record.peer,
       });
+      renderPeerSelect();
     },
   });
   return s;
 }
 
-/* UC-06 — send a text message over the open DataChannel. */
+/* UC-06 — send a text message over the DISPLAYED thread's DataChannel. */
 async function sendText(content) {
-  if (!session || !session.isOpen) return;
-  const record = await session.sendText(content);
-  if (record && chatUI.getDisplayedThread() === record.peer) {
+  const peerKey = chatUI.getDisplayedThread();
+  const s = peerKey && sessions.get(peerKey);
+  if (!s || !s.isOpen) return;
+  const record = await s.sendText(content);
+  if (record) {
     chatUI.appendMessage(record, { mine: true, peerLabel: peerLabelFor(record.peer) });
   }
 }
 
-/* UC-04 — connect to a known peer (the user-initiated knock). */
+/* UC-04 — connect to a known peer (the user-initiated knock). Mesh: other
+ * sessions keep running; this adds one more pair. */
 async function initiateConnection(peerRecord) {
-  if (session) return;
+  const key = peerRecord._key;
+  const existing = sessions.get(key);
+  if (existing && !existing._tornDown) return; // already live or connecting
   if (!signaling.isConnected()) {
     chatUI.appendSystemMessage("CANNOT KNOCK — SIGNAL LOST. RECONNECT FIRST.");
     return;
   }
   /* Render the thread FIRST and await it — the knock and all subsequent
-   * system messages (KNOCKING, PEER IS BUSY, PEER UNAVAILABLE) must land
-   * AFTER the thread render or the re-render would wipe them.
-   * v2.1 — the initiator is also taken to the chat view so the knock
-   * progress is visible immediately (no dead click on CONTACTS). */
-  await loadThread(peerRecord._key);
+   * system messages (KNOCKING, PEER UNAVAILABLE) must land AFTER the thread
+   * render or the re-render would wipe them. The initiator stays in the
+   * chat view so knock progress is visible (v2.1). */
+  await loadThread(key);
   switchView("chat");
   chatUI.appendSystemMessage(`KNOCKING ON ${contactsView.peerLabel(peerRecord)}...`);
   const s = createSession();
-  session = s;
+  sessions.set(key, s);
+  updateConnectButton();
   const ok = await s.initiate(peerRecord);
-  if (!ok && session === s) session = null;
+  if (!ok && sessions.get(key) === s) {
+    sessions.delete(key);
+    refreshContacts().catch(() => {});
+  }
 }
 
-/* FR-15 (v2.3) — inbound knock: known_peers check, auto-add, handshake. */
+/* FR-15 — inbound knock: known_peers check, auto-add, handshake.
+ * Mesh: never busy — a fresh knock from a peer with a stale live session
+ * replaces it (asymmetric state self-heals with a fresh keypair + re-seed). */
 async function handleKnock(fromKeyString, ecdhPublicKey, timestamp) {
-  if (session && !session._tornDown) return; // busy guard (server room-full is primary)
-
   const fromJwk = stringToJwk(fromKeyString);
   if (!fromJwk || !isValidPublicJwk(fromJwk) || !ecdhPublicKey) return;
 
@@ -171,21 +240,56 @@ async function handleKnock(fromKeyString, ecdhPublicKey, timestamp) {
     }
   }
 
-  /* FR-15d — known peer (or freshly auto-added): proceed automatically.
-   * The answerer switches to the incoming peer's thread (and, v2.1, to the
-   * chat view) before the handshake so every system message renders into
-   * the right place. */
+  /* Replace any stale session for this peer before accepting the fresh one. */
+  const stale = sessions.get(fromKeyString);
+  if (stale && !stale._tornDown) {
+    stale._teardown({ silent: true });
+    if (sessions.get(fromKeyString) === stale) sessions.delete(fromKeyString);
+  }
+
   const s = createSession();
-  session = s;
-  await loadThread(fromKeyString);
-  switchView("chat");
+  sessions.set(fromKeyString, s);
+  updateConnectButton();
+
+  /* v2.1 focus policy, mesh-aware: the answerer is taken to the incoming
+   * peer's thread unless that would rip them out of another live
+   * conversation (then the onSessionOpen toast covers it). */
+  if (!isViewingLiveOther(fromKeyString)) {
+    await loadThread(fromKeyString);
+    switchView("chat");
+  }
   await s.acceptIncoming({ from: fromKeyString, ecdhPublicKey, timestamp }, record);
+}
+
+/* ==================== v2.2 — session action from the UI ==================== */
+
+/** DISCONNECT / CANCEL handler for a peer (chat header + contacts modal). */
+function endSessionFor(peerRecord, { fromChatHeader = false } = {}) {
+  const key = peerRecord._key || jwkToString(peerRecord.public_key);
+  const s = sessions.get(key);
+  if (!s || s._tornDown) return;
+  if (s.isOpen) {
+    /* FR-53 — clean disconnect: encrypted bye frame + server session-end. */
+    s.disconnect({ note: "YOU DISCONNECTED" }).catch(console.error);
+  } else {
+    /* Handshake in flight — cancel the knock. */
+    systemMessageFor(key, fromChatHeader ? "KNOCK CANCELLED" : "CONNECTION CANCELLED");
+    s._teardown({ silent: true });
+  }
 }
 
 /* ============================== thread view ================================ */
 
 async function loadThread(peerKeyString) {
   if (!peerKeyString) return;
+  /* The selector always mirrors the displayed thread — a loadThread from a
+   * toast click or a fresh knock must move the dropdown too, or the header
+   * action (CONNECT/DISCONNECT) would silently target the stale selection. */
+  const sel = $("peer-select");
+  if (sel.value !== peerKeyString &&
+      [...sel.options].some((o) => o.value === peerKeyString)) {
+    sel.value = peerKeyString;
+  }
   const [records] = await Promise.all([
     messageStore.getHistoryFor(peerKeyString),
     ensureFingerprints(),
@@ -193,14 +297,25 @@ async function loadThread(peerKeyString) {
   chatUI.renderThread(peerKeyString, records, {
     peerLabel: peerLabelFor(peerKeyString),
   });
+
   /* Idle thread: no live session → guidance message + disabled input
-   * (FR-26). A live session enables the input in onSessionOpen AFTER the
-   * thread render completes (ordering matters — the render is async). */
-  const live = session && session.peerKeyString === peerKeyString && session.isOpen;
-  if (!live) {
+   * (FR-26). A live session enables the input AFTER the render completes
+   * (ordering matters — the render is async). A session still handshaking
+   * keeps the composer off with a CONNECTING placeholder. */
+  const s = sessions.get(peerKeyString);
+  const live = s && !s._tornDown;
+  if (live && s.isOpen) {
+    chatUI.setInputEnabled(true, { placeholder: "TYPE MESSAGE..." });
+  } else if (live) {
+    chatUI.setInputEnabled(false, { placeholder: "CONNECTING..." });
+  } else {
     chatUI.appendSystemMessage("NO SESSION — PRESS CONNECT TO KNOCK", { withTime: false });
     chatUI.setInputEnabled(false, { placeholder: "NO OPEN DATA CHANNEL" });
   }
+
+  unreadCounts.delete(peerKeyString); // viewing the thread = messages seen
+  renderPeerSelect();                 // drop the (n) badge from the selector
+  updateConnectButton();
 }
 
 async function ensureFingerprints() {
@@ -216,13 +331,11 @@ async function ensureFingerprints() {
   }
 }
 
-/* ===================== v2.1 — missed-knock notice ========================= */
+/* ===================== v2.1/v2.2 — transient notices ======================= */
 
-/* E-06 enrichment (SRS v2.5 §3.3): the busy peer is told, transiently, that
- * someone tried to reach them while they were in another session. One chat
- * session per peer remains the V1 rule (C-01) — this only surfaces it. */
-let knockToastTimer = null;
-
+/* E-06 enrichment (revised for mesh): the target of a dropped duplicate-pair
+ * knock is told, transiently, that someone tried to reach them on a pair
+ * that is already active. */
 async function showMissedKnockToast(fromKeyString) {
   let label = "UNKNOWN PEER";
   const rec = peersCache.find((p) => p._key === fromKeyString);
@@ -240,19 +353,8 @@ async function showMissedKnockToast(fromKeyString) {
     }
   }
 
-  const busy = Boolean(session && session.isOpen);
-  const note = busy
-    ? `MISSED KNOCK — ${label} TRIED TO CONNECT (YOU ARE IN ANOTHER SESSION)`
-    : `MISSED KNOCK — ${label} TRIED TO CONNECT`;
-
-  const toast = $("knock-toast");
-  toast.textContent = `${note} — CLICK TO DISMISS`;
-  toast.classList.remove("hidden");
-  if (knockToastTimer) clearTimeout(knockToastTimer);
-  knockToastTimer = setTimeout(() => {
-    toast.classList.add("hidden");
-    knockToastTimer = null;
-  }, 8000);
+  const note = `MISSED KNOCK — ${label} TRIED TO CONNECT (PAIR ALREADY ACTIVE)`;
+  showToast(note, { peerKey: fromKeyString });
 
   /* If the knocker's thread happens to be on screen, log the line there too. */
   systemMessageFor(fromKeyString, note);
@@ -270,12 +372,18 @@ async function refreshContacts() {
   await ensureFingerprints();
 
   contactsView.renderContacts(peersCache, {
-    activeSessionPeerKey: session ? session.peerKeyString : null,
+    connectedPeerKeys: new Set(
+      [...sessions.values()]
+        .filter((s) => !s._tornDown)
+        .map((s) => s.peerKeyString)
+    ),
   });
   renderPeerSelect();
   updateStatus();
 }
 
+/* The peer selector doubles as the mesh session switcher: ● marks a live
+ * session, (n) counts unseen background messages. */
 function renderPeerSelect() {
   const select = $("peer-select");
   const prev = select.value;
@@ -287,18 +395,50 @@ function renderPeerSelect() {
     opt.textContent = "NO KNOWN PEERS — ADD ONE IN CONTACTS";
     select.appendChild(opt);
     select.disabled = true;
-    $("btn-connect").disabled = true;
+    updateConnectButton();
     return;
   }
   select.disabled = false;
   for (const p of peersCache) {
     const opt = document.createElement("option");
     opt.value = p._key;
-    opt.textContent = contactsView.peerLabel(p);
+    let label = contactsView.peerLabel(p);
+    const s = sessions.get(p._key);
+    if (s && !s._tornDown && s.isOpen) label = `● ${label}`;
+    const unread = unreadCounts.get(p._key) || 0;
+    if (unread > 0) label = `${label} (${unread})`;
+    opt.textContent = label;
     select.appendChild(opt);
   }
   if (prev && peersCache.some((p) => p._key === prev)) select.value = prev;
-  $("btn-connect").disabled = Boolean(session);
+  updateConnectButton();
+}
+
+/* v2.2 FR-52/FR-53 — the chat header action follows the selected peer's
+ * session state: CONNECT → CANCEL KNOCK (handshake) → DISCONNECT (open). */
+function updateConnectButton() {
+  const btn = $("btn-connect");
+  const key = $("peer-select").value;
+  if (!key || !peersCache.some((p) => p._key === key)) {
+    btn.textContent = "CONNECT";
+    btn.disabled = true;
+    btn.classList.add("widget-btn--primary");
+    return;
+  }
+  const s = sessions.get(key);
+  if (!s || s._tornDown) {
+    btn.textContent = "CONNECT";
+    btn.disabled = false;
+    btn.classList.add("widget-btn--primary");
+  } else if (s.isOpen) {
+    btn.textContent = "DISCONNECT";
+    btn.disabled = false;
+    btn.classList.remove("widget-btn--primary");
+  } else {
+    btn.textContent = "CANCEL KNOCK";
+    btn.disabled = false;
+    btn.classList.remove("widget-btn--primary");
+  }
 }
 
 async function onPeerSelectChange() {
@@ -318,6 +458,48 @@ function switchView(name) {
     btn.setAttribute("aria-current", active ? "true" : "false");
     btn.classList.toggle("widget-btn--primary", active);
   }
+}
+
+/* ===================== signaling event routing (§15.2 mesh) ================ */
+
+/* ONE router per event, registered for the app's lifetime. Each router
+ * resolves the target session from the live sessions Map by the event's
+ * `from` key — sessions never touch the shared handler map, so a stale
+ * session can never intercept another's traffic (§8.9's goal, achieved by
+ * construction). */
+function wireSessionRouting() {
+  signaling.setHandler("onKnock", (from, ecdhPublicKey, timestamp) =>
+    handleKnock(from, ecdhPublicKey, timestamp).catch((err) =>
+      console.error("[knock] handling failed", err)
+    )
+  );
+  signaling.setHandler("onKnockBlocked", (from) => {
+    if (typeof from !== "string") return;
+    showMissedKnockToast(from).catch(() => {});
+  });
+  signaling.setHandler("onKnockAccepted", (from, ecdhPublicKey) =>
+    sessions.get(from)?._onKnockAccepted(from, ecdhPublicKey)
+  );
+  signaling.setHandler("onKnockRejected", (from) =>
+    sessions.get(from)?._onKnockRejected()
+  );
+  signaling.setHandler("onRoomFull", (to) => sessions.get(to)?._onRoomFull());
+  signaling.setHandler("onOffer", (from, offer) =>
+    sessions.get(from)?._onOffer(from, offer)
+  );
+  signaling.setHandler("onAnswer", (from, answer) =>
+    sessions.get(from)?._onAnswer(from, answer)
+  );
+  signaling.setHandler("onIceCandidate", (from, candidate) =>
+    sessions.get(from)?._onRemoteCandidate(from, candidate)
+  );
+  signaling.setHandler("onPeerDisconnected", (publicKey) =>
+    sessions.get(publicKey)?._onPeerDisconnected(publicKey)
+  );
+  signaling.setHandler("onSessionClosed", (from) =>
+    /* Clean far-side disconnect — same handling as a socket-level drop. */
+    sessions.get(from)?._onPeerDisconnected(from)
+  );
 }
 
 /* ================================ boot ===================================== */
@@ -369,23 +551,25 @@ function switchView(name) {
   });
   signaling.connect(myKeyString);
 
-  /* App-level handler: route knocks (FR-15). Everything else is registered
-   * per-session by PeerConnection through the handler map (§8.9). */
-  signaling.setHandler("onKnock", (from, ecdhPublicKey, timestamp) =>
-    handleKnock(from, ecdhPublicKey, timestamp).catch((err) =>
-      console.error("[knock] handling failed", err)
-    )
-  );
-
-  /* v2.1 / E-06 enrichment — someone knocked while we were busy. */
-  signaling.setHandler("onKnockBlocked", (from) => {
-    if (typeof from !== "string") return;
-    showMissedKnockToast(from).catch(() => {});
-  });
+  /* App-level event routing (knocks + per-session events, §15.2 mesh). */
+  wireSessionRouting();
 
   /* ---- views ---- */
-  chatUI.initChatUI({ send: (text) => sendText(text).catch(console.error) });
+  initToast({
+    onOpenThread: async (peerKey) => {
+      await loadThread(peerKey);
+      switchView("chat");
+    },
+  });
+  chatUI.initChatUI({
+    send: (text) => sendText(text).catch(console.error),
+    myKey: myKeyString, // v2.2 — renderThread resolves each record's side
+  });
   contactsView.initContactsView({
+    isPeerConnected: (key) => {
+      const s = key && sessions.get(key);
+      return Boolean(s && !s._tornDown);
+    },
     onAddPeer: async (jwk, nickname) => {
       try {
         await knownPeers.addPeer(jwk, nickname);
@@ -396,13 +580,33 @@ function switchView(name) {
       }
     },
     onConnect: (peerRecord) => initiateConnection(peerRecord).catch(console.error),
+    onDisconnect: (peerRecord) => endSessionFor(peerRecord),
+    onOpenChat: (peerRecord) => {
+      loadThread(peerRecord._key).then(() => switchView("chat"));
+    },
     onRemovePeer: async (jwk) => {
+      /* Removing a contact also ends any live session with them — history
+       * is kept (§10.3), only the channel and the record go. */
+      const key = jwkToString(jwk);
+      const s = sessions.get(key);
+      if (s && !s._tornDown) {
+        systemMessageFor(key, "PEER REMOVED — SESSION CLOSED");
+        s._teardown({ silent: true });
+      }
       await knownPeers.removePeer(jwk);
       await refreshContacts();
     },
     onRenamePeer: async (jwk, nickname) => {
       await knownPeers.updateNickname(jwk, nickname);
       await refreshContacts();
+      /* v2.2 FR-55 — retrospective labelling: the renamed peer's whole
+       * thread re-renders, so ALREADY-DRAWN messages (and every future
+       * render) carry the new nickname; the record's JSON in IndexedDB is
+       * updated by updateNickname above and travels inside every export. */
+      const key = jwkToString(jwk);
+      if (chatUI.getDisplayedThread() === key) {
+        await loadThread(key);
+      }
     },
   });
   settingsView.initSettingsView({
@@ -456,19 +660,18 @@ function switchView(name) {
   $("btn-connect").addEventListener("click", () => {
     const key = $("peer-select").value;
     const rec = peersCache.find((p) => p._key === key);
-    if (rec) initiateConnection(rec).catch(console.error);
+    if (!rec) return;
+    const s = sessions.get(key);
+    if (s && !s._tornDown) {
+      endSessionFor(rec, { fromChatHeader: true });
+    } else {
+      initiateConnection(rec).catch(console.error);
+    }
   });
 
   /* ---- status bar tap-to-retry (E-03) ---- */
   $("status-bar").addEventListener("click", () => {
     if (signaling && signaling.state === "lost") signaling.manualReconnect();
-  });
-
-  /* ---- v2.1: missed-knock toast click-to-dismiss ---- */
-  $("knock-toast").addEventListener("click", () => {
-    if (knockToastTimer) clearTimeout(knockToastTimer);
-    knockToastTimer = null;
-    $("knock-toast").classList.add("hidden");
   });
 
   /* ---- title bar: drag + minimise/close chrome (§2.3) ---- */
@@ -516,6 +719,6 @@ function switchView(name) {
   }
 
   statusExtra.textContent =
-    window.APP_CONFIG?.statusSuffix || "V2.1 — SRS 2.5 + ENCRYPTED BACKUPS";
+    window.APP_CONFIG?.statusSuffix || "V2.2 — MESH SESSIONS + ENCRYPTED BACKUPS";
   updateStatus();
 })();
