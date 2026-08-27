@@ -20,10 +20,12 @@ let lastDayKey = null;
 let lastSenderKey = null; // v2.1 grouping: sender of the previous row
 let onSendMessage = null;
 let scroller = null;
+let myKeyString = null; // v2.2 — resolves which stored messages are MINE
 
-export function initChatUI({ send }) {
+export function initChatUI({ send, myKey }) {
   scroller = $("chat-messages");
   onSendMessage = send;
+  myKeyString = myKey || null;
   attachScrollbar(scroller, $("chat-scrollbar"));
 
   $("chat-input-row").addEventListener("submit", (e) => {
@@ -50,10 +52,20 @@ export function setDisplayedThread(peerKeyString) {
   scroller.replaceChildren();
 }
 
-/** Load a full thread from the store and render it (FR-24, NFR-07). */
-export function renderThread(peerKeyString, records, { mine, peerLabel }) {
+/** Load a full thread from the store and render it (FR-24, NFR-07).
+ *  v2.2: each record's side is resolved from its `sender` field, so a
+ *  re-render (thread switch, reload, retrospective nickname change) always
+ *  puts MY messages on the right and the peer's on the left — and always
+ *  labels rows with the CURRENT nickname. */
+export function renderThread(peerKeyString, records, { peerLabel }) {
   setDisplayedThread(peerKeyString);
-  for (const r of records) appendMessage(r, { history: false, mine, peerLabel });
+  for (const r of records) {
+    appendMessage(r, {
+      history: false,
+      mine: myKeyString ? r.sender === myKeyString : false,
+      peerLabel,
+    });
+  }
   if (records.length > 0) scrollToBottom();
 }
 
