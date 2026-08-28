@@ -495,8 +495,10 @@
     padding: 3px 6px;
   }
 
-  /* ---- Missed-knock toast (v2.1, E-06 enrichment) ---------------------- */
-  #knock-toast {
+  /* ---- Transient notification toast (v2.2, FR-54; v2.1 knock-toast
+   *      generalised): missed knocks, mesh session notices, background
+   *      message previews. One line, ellipsised, click = open/dismiss. --- */
+  #app-toast {
     position: absolute;
     left: 50%;
     bottom: 34px; /* above the status bar */
