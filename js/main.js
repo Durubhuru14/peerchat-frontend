@@ -719,6 +719,6 @@ function wireSessionRouting() {
   }
 
   statusExtra.textContent =
-    window.APP_CONFIG?.statusSuffix || "V2.2 — MESH SESSIONS + ENCRYPTED BACKUPS";
+    window.APP_CONFIG?.statusSuffix || "V2.2.1 — MESH SESSIONS + ENCRYPTED BACKUPS";
   updateStatus();
 })();
