@@ -417,8 +417,17 @@
   /* ---- Message rows (SRS §10.2 rendering rules) -------------------------
    * v2.1: flattened bubbles — no boxed bevels per message (the side stripe
    * alone marks sent/recv), tightened rhythm, and consecutive messages from
-   * the same sender group together with the meta line shown once. */
+   * the same sender group together with the meta line shown once.
+   * v2.2.1: sent rows mirror the stripe to the RIGHT edge and right-align
+   * their meta — a long sent message grows leftward but its visual anchor
+   * (stripe + YOU · time) stays pinned to the right, so it never reads as
+   * a left-drifting block. */
   .msg-row {
+    /* v2.2.1: hug the content — a block row would fill the full 76% and the
+     * text of short sent messages would start near the LEFT edge of a wide
+     * right-anchored block ("my message goes toward the left"). Bubbles now
+     * shrink to fit and grow leftward only as the text wraps. */
+    width: fit-content;
     max-width: 76%;
     margin: 2px 8px;
     padding: 3px 9px 4px;
@@ -429,9 +438,12 @@
   }
   .msg-row--sent {
     margin-left: auto;
-    border-left: 2px solid var(--accent-primary);
+    border-right: 2px solid var(--accent-primary);
     /* opaque + warm tint: your own messages read at a glance */
     background: color-mix(in srgb, var(--accent-primary) 9%, var(--bg-panel));
+  }
+  .msg-row--sent .msg-meta {
+    justify-content: flex-end;
   }
   .msg-row--recv {
     margin-right: auto;
