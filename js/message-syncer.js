@@ -1,27 +1,31 @@
 /* message-syncer.js — MessageSyncer (SRS §12, FR-23, FR-23a)
  *
  * "On connection the local message history for that peer shall be seeded
- * across."  Direction per SRS §8.2: the OFFERER seeds, the ANSWERER receives.
+ * across."  Direction per SRS §8.2 (v2.3): BILATERAL — BOTH peers seed
+ * their copy when the DataChannel opens, so a fresh device on either
+ * side recovers the full thread. (V1 seeded offerer → answerer only —
+ * documented as limitation L-6, resolved in v2.3.0.)
+ *
  * Seeded payloads are encrypted with the session AES-GCM key exactly like
  * live messages (FR-23a); the receiver decrypts and stores them as
  * status "seeded".
  *
- * Merge semantics: the offerer's copy contains the whole thread (its sent
- * AND its received messages). The answerer already owns most of those ids —
- * insertion is idempotent, existing records are never overwritten, and only
- * genuinely-new records are returned for rendering (with the dim [HISTORY]
- * tag, §10.2). A fresh answerer device therefore recovers the full thread.
- * A fresh OFFERER device does not (one-directional seeding is the specified
- * V1 behaviour — documented limitation, see DOCUMENTATION.md §12).
+ * Merge semantics: each side's copy contains the whole thread (its sent
+ * AND its received messages). Both sides already own most of those ids —
+ * insertion is idempotent, existing records are never overwritten, and
+ * only genuinely-new records are returned for rendering (with the dim
+ * [HISTORY] tag, §10.2). A fresh device on either side therefore recovers
+ * the full conversation.
  */
 
 import { encryptMessage, decryptMessage } from "./crypto-service.js";
 import { getHistoryFor, addSeededIfAbsent } from "./message-store.js";
 
 /**
- * OFFERER side — send this device's full history for the session peer,
- * encrypted with the session key, as one batch envelope over the DataChannel.
- * Called by PeerConnection right after the channel opens (§8.2).
+ * SENDING side (either peer — bilateral since v2.3): send this device's
+ * full history for the session peer, encrypted with the session key, as
+ * one batch envelope over the DataChannel. Called by PeerConnection right
+ * after the channel opens (§8.2) for BOTH roles.
  *
  * @param {PeerConnection} session — the live session (dc, sharedKey, …)
  */
@@ -48,10 +52,10 @@ export async function seedHistory(session) {
 }
 
 /**
- * ANSWERER side — decrypt and merge an incoming batch (or a single live
- * message) into the local store. Returns only the records that were NEWLY
- * inserted (for rendering). Decryption happens in PeerConnection before
- * this is called.
+ * RECEIVING side (either peer — bilateral since v2.3) — decrypt and merge
+ * an incoming batch (or a single live message) into the local store.
+ * Returns only the records that were NEWLY inserted (for rendering).
+ * Decryption happens in PeerConnection before this is called.
  *
  * @param {Array}  payload  decrypted records [{id, content, timestamp, sender}]
  * @param {string} peerKeyString the session peer (other party)

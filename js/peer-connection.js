@@ -278,19 +278,22 @@ export default class PeerConnection {
        * duplicate knocks and routes the eventual clean session-end. */
       this.signaling.sessionOpen(this.peerKeyString);
       this.deps.onSessionOpen(this);
-      /* §8.2 — the OFFERER seeds local history across on connect (FR-23);
-       * the answerer receives and merges it. A short delay guarantees the
-       * answerer's ondatachannel wiring is complete before the batch lands
-       * (hardening against an open-event race observed in cross-browser
+      /* §8.2 (v2.3, FR-23 revised) — BILATERAL history seeding: BOTH peers
+       * send their local history for this thread when the channel opens, so
+       * a fresh device on EITHER side recovers the full conversation (the
+       * v1 behaviour seeded offerer → answerer only — former limitation
+       * L-6, resolved). Merge is idempotent (existing ids are never
+       * overwritten), so the two crossing envelopes are harmless. The
+       * short delay keeps the open-event race mitigated (L-1): it
+       * guarantees the receiving side's ondatachannel wiring is complete
+       * before either batch lands (hardening observed in cross-browser
        * testing — see DOCUMENTATION.md §11 Step 8). */
-      if (this.role === "offerer") {
-        setTimeout(() => {
-          if (this._tornDown || !this._open) return;
-          seedHistory(this).catch((err) => {
-            console.error("[sync] history seeding failed", err);
-          });
-        }, 400);
-      }
+      setTimeout(() => {
+        if (this._tornDown || !this._open) return;
+        seedHistory(this).catch((err) => {
+          console.error("[sync] history seeding failed", err);
+        });
+      }, 400);
     };
 
     dc.onmessage = (event) => this._onChannelMessage(event);
