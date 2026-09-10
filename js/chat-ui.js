@@ -81,7 +81,7 @@ export function clearThread() {
 /** UC-01 step 7 — first-launch prompt in the chat area. */
 export function showFirstLaunchBanner({ onCopyKey, onGoContacts }) {
   const banner = el("div", { class: "bevel-out bg-panel p-3 my-6 mx-auto max-w-[520px] flex flex-col gap-2" },
-    el("div", { class: "text-[11px] uppercase tracking-tight text-accent2", text: "── WELCOME TO P2P_CHAT ──" }),
+    el("div", { class: "text-[11px] uppercase tracking-tight text-accent2", text: "── WELCOME TO PEERCHAT ──" }),
     el("div", { class: "text-[12px] leading-relaxed" },
       "YOUR IDENTITY IS A KEYPAIR GENERATED IN THIS BROWSER. NOBODY CAN REGISTER YOU, ADMINISTRATE YOU, OR READ YOUR MESSAGES."),
     el("ol", { class: "text-[12px] leading-relaxed list-decimal pl-5 flex flex-col gap-1" },

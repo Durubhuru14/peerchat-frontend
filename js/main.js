@@ -689,7 +689,7 @@ function wireSessionRouting() {
   });
   $("btn-window-close").addEventListener("click", () => {
     showModal({
-      title: "P2P_CHAT.EXE",
+      title: "PEERCHAT",
       bodyText: "A BROWSER PAGE CANNOT CLOSE ITSELF. MINIMISE THE CONSOLE INSTEAD?",
       buttons: [
         { label: "MINIMISE", primary: true, onClick: () => $("btn-minimize").click() },
@@ -719,6 +719,6 @@ function wireSessionRouting() {
   }
 
   statusExtra.textContent =
-    window.APP_CONFIG?.statusSuffix || "V2.2.1 — MESH SESSIONS + ENCRYPTED BACKUPS";
+    window.APP_CONFIG?.statusSuffix || "PEERCHAT V2.3.0";
   updateStatus();
 })();

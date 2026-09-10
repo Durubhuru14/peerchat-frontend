@@ -220,7 +220,7 @@ function showImportBackupModal() {
       fileStatus.textContent = detected.label;
       if (detected.kind === "unknown") {
         parsed = null;
-        showError("THIS FILE IS NOT A P2P_CHAT BACKUP.");
+        showError("THIS FILE IS NOT A PEERCHAT BACKUP.");
       }
     } catch {
       parsed = null;

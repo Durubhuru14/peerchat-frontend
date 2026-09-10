@@ -63,7 +63,7 @@ export function inspectBackup(parsed) {
       label: `UNENCRYPTED V1 EXPORT — EXPORTED ${parsed.exported_at || "?"}`,
     };
   }
-  return { kind: "unknown", label: "NOT A P2P_CHAT BACKUP FILE" };
+  return { kind: "unknown", label: "NOT A PEERCHAT BACKUP FILE" };
 }
 
 /* --------------------------- 3. unlock / decrypt --------------------------- */
@@ -103,7 +103,7 @@ export async function unlockBackup(parsed, pastedKey) {
  */
 export async function validateBackup(doc) {
   if (!doc || typeof doc !== "object" || doc.app !== "p2p-decentralised-chat") {
-    return { ok: false, error: "NOT A P2P_CHAT BACKUP DOCUMENT." };
+    return { ok: false, error: "NOT A PEERCHAT BACKUP DOCUMENT." };
   }
   const identity = doc.identity;
   if (!identity || !isValidPublicJwk(identity.public_key)) {
