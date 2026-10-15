@@ -117,7 +117,7 @@ STUN. Modern browsers only (Chrome/Edge/Firefox/Safari, recent).
 
 ## The other halves
 
-- **`(backend/)[https://github.com/Durubhuru14/peerchat-backend]`** — the Node signaling server (deploy that one to Render).
+- **(backend/)[https://github.com/Durubhuru14/peerchat-backend]** — the Node signaling server (deploy that one to Render).
 
 ## License
 
