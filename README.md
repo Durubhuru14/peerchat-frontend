@@ -117,9 +117,7 @@ STUN. Modern browsers only (Chrome/Edge/Firefox/Safari, recent).
 
 ## The other halves
 
-- **`backend/`** — the Node signaling server (deploy that one to Render).
-- **Root `peerchat/` archive** — full docs: SRS v2.8, DOCUMENTATION.md,
-  WORKLOG.md, UML diagrams, screenshots, and the 59-check test suite.
+- **`(backend/)[https://github.com/Durubhuru14/peerchat-backend]`** — the Node signaling server (deploy that one to Render).
 
 ## License
 
