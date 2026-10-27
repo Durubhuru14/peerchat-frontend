@@ -12,7 +12,7 @@
  * Only this file differs between deployment shapes; the app code is identical.
  */
 window.APP_CONFIG = {
-  signalingPath: "hhttps://peerchat-backend-0lh1.onrender.com",
+  signalingPath: "https://peerchat-backend-0lh1.onrender.com",
   /* Optional label shown in the status bar right slot (deployment info) */
   statusSuffix: "",
 };
